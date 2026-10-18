@@ -1,0 +1,29 @@
+<RunSettings>
+  <TestRunParameters>
+    <Parameter name="WEB_BASE_URL" value="http://localhost:5173" />
+    <Parameter name="API_BASE_URL" value="http://localhost:5080" />
+  </TestRunParameters>
+
+  <!-- Reports go to tests/IncidentDesk.Tests/TestResults/ (git-ignored). -->
+  <RunConfiguration>
+    <ResultsDirectory>./TestResults</ResultsDirectory>
+  </RunConfiguration>
+
+  <!-- Built-in loggers: no extra packages. Fixed file names, so each run overwrites the last report. -->
+  <LoggerRunSettings>
+    <Loggers>
+      <!-- Human-readable report: open TestResults/TestResults.html in a browser. -->
+      <Logger friendlyName="html" enabled="True">
+        <Configuration>
+          <LogFileName>TestResults.html</LogFileName>
+        </Configuration>
+      </Logger>
+      <!-- Machine-readable report (also opens in Visual Studio; CI systems can publish it). -->
+      <Logger friendlyName="trx" enabled="True">
+        <Configuration>
+          <LogFileName>TestResults.trx</LogFileName>
+        </Configuration>
+      </Logger>
+    </Loggers>
+  </LoggerRunSettings>
+</RunSettings>
