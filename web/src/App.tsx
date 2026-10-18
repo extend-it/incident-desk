@@ -43,6 +43,7 @@ export default function App() {
           setState({ kind: 'forbidden' })
         } else if (!response.ok) {
           setState({ kind: 'error', status: response.status })
+          // setState({ kind: 'loaded', incidents: [] }) // MUTATION Test for IncidentListStateTests: errors shown as "no incidents"
         } else {
           const incidents: Incident[] = await response.json()
           setState({ kind: 'loaded', incidents })
