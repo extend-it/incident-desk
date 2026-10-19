@@ -160,12 +160,15 @@ app, not the API.
 ### Mutation checks
 
 Each check below was done by hand: the code was broken on purpose, the expected test failed
-for the expected reason, and the code was reverted.
+for the expected reason, and the code was reverted. Line numbers refer to the files as committed
+with this table; if a file changes, find the line by the quoted code.
 
-| Mutation | File | Test that failed |
-|---|---|---|
-| GET ignores `tenantId` | `api/IncidentDesk.Api/Program.cs` | `IncidentOfAnotherTenantIsNotListed` (count 1, expected 0); `EachTenantSeesItsOwnIncident` still passed, because presence checks can't catch a leak |
-| Severity not rendered | `web/src/App.tsx` | `IncidentCreatedThroughTheApiIsListedOnThePage` and `EachTenantSeesItsOwnIncident` |
-| Errors shown as an empty list | `web/src/App.tsx` | `ServerError500ShowsAnErrorInsteadOfAnEmptyList`; `NetworkFailureShowsAnErrorWithoutStatus` still passed (different code path) |
-| Polling switched off | `web/src/App.tsx` | `IncidentSentToTheQueueAppearsAsProcessingThenReady`, at "Processing" |
-| Worker never sets `Ready` | `api/IncidentDesk.Api/IncidentQueueWorker.cs` | `IncidentSentToTheQueueAppearsAsProcessingThenReady`, at "Ready" |
+| Mutation | File | How to produce it (line · action · code) | Test that failed |
+|---|---|---|---|
+| GET ignores `tenantId` | `api/IncidentDesk.Api/Program.cs` | **Line 112 · Change value:** `.Where(i => i.TenantId == tenantId)` → `.Where(i => true)`<br>(Alternative: **Line 112 · Comment out**, then **Line 115 · Uncomment** the ready-made `.Where(i => true)`)<br>**Then · Restart the API** (Ctrl+C, `dotnet run`) | `IncidentOfAnotherTenantIsNotListed` (count 1, expected 0); `EachTenantSeesItsOwnIncident` still passed, because presence checks can't catch a leak |
+| Severity not rendered | `web/src/App.tsx` | **Line 110 · Comment out** (JSX syntax): `<span className="severity">{incident.severity}</span>` → `{/* <span className="severity">{incident.severity}</span> */}`<br>**Then · Save** (Vite reloads the page by itself) | `IncidentCreatedThroughTheApiIsListedOnThePage` and `EachTenantSeesItsOwnIncident` |
+| Errors shown as an empty list | `web/src/App.tsx` | **Line 55 · Comment out:** `setState({ kind: 'error', status: response.status })`<br>**Line 56 · Uncomment:** `setState({ kind: 'loaded', incidents: [] })`<br>**Then · Save** | `ServerError500ShowsAnErrorInsteadOfAnEmptyList`; `NetworkFailureShowsAnErrorWithoutStatus` still passed (different code path) |
+| Polling switched off | `web/src/App.tsx` | **Line 71 · Comment out:** `const timer = setInterval(load, POLL_INTERVAL_MS)`<br>**Line 73 · Comment out:** `clearInterval(timer)` (it would no longer compile without line 71)<br>**Then · Save** | `IncidentSentToTheQueueAppearsAsProcessingThenReady`, at "Processing" |
+| Worker never sets `Ready` | `api/IncidentDesk.Api/IncidentQueueWorker.cs` | **Line 113 · Comment out:** `store.Update(incident with { Status = IncidentStatus.Ready });`<br>**Then · Restart the API** | `IncidentSentToTheQueueAppearsAsProcessingThenReady`, at "Ready" |
+
+**To revert a mutation,** do the opposite action on the same lines (uncomment what you commented out, restore the original value), restart or save the same way, and run the tests again: all must pass.
