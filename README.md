@@ -1,4 +1,5 @@
 # Incident Desk
+[![tests](https://github.com/extend-it/incident-desk/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/extend-it/incident-desk/actions/workflows/tests.yml)
 
 A deliberately tiny app that exists to be a **system under test** for practising
 Playwright end-to-end tests in C#. It is not a real product: no database, no

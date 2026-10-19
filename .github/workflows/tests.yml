@@ -1,0 +1,90 @@
+name: tests
+
+on:
+    push:
+        branches: [main]
+    pull_request:
+    workflow_dispatch:      # "Run workflow" button, for re-running without a new commit
+
+jobs:
+    test:
+        runs-on: ubuntu-latest
+        timeout-minutes: 20
+
+        steps:
+            - uses: actions/checkout@v4
+
+            # The emulator needs about a minute to start, so launch it first
+            # and do the slow installs while it boots.
+            - name: Start Service Bus emulator
+              run: docker compose -f docker/docker-compose.yaml up -d
+
+            - uses: actions/setup-dotnet@v4
+              with:
+                dotnet-version: 10.0.x
+
+            - uses: actions/setup-node@v4
+              with:
+                node-version: 22
+                cache: npm
+                cache-dependency-path: web/package-lock.json
+
+            - name: Build API and tests
+              run: dotnet build IncidentDesk.sln
+
+            - name: Install web dependencies
+              run: npm ci
+              working-directory: web
+
+            - name: Install Playwright browser
+              run: pwsh tests/IncidentDesk.Tests/bin/Debug/net10.0/playwright.ps1 install --with-deps chromium
+
+            - name: Wait for emulator
+              run: |
+                for i in {1..36}; do
+                    curl -sf http://localhost:5300/health && exit 0
+                    sleep 5
+                done
+                echo "Emulator not healthy after 3 minutes"
+                exit 1
+
+            # Background processes keep running in later steps of the same job.
+            # Their output goes to log files, uploaded at the end.
+            - name: Start API (port 5080)
+              run: |
+                nohup dotnet run --project api/IncidentDesk.Api --no-build > api.log 2>&1 &
+                for i in {1..30}; do
+                    curl -sf http://localhost:5080/health && exit 0
+                    sleep 2
+                done
+                echo "API did not answer /health within 60 s"; cat api.log
+                exit 1
+
+            - name: Start web app (port 5173)
+              working-directory: web
+              run: |
+                nohup npm run dev > ../web.log 2>&1 &
+                for i in {1..30}; do
+                    curl -sf http://localhost:5173 > /dev/null && exit 0
+                    sleep 2
+                done
+                echo "Web app did not answer within 60 s"; cat ../web.log
+                exit 1
+
+            - name: Test
+              run: dotnet test tests/IncidentDesk.Tests --no-build
+
+            - name: Upload test report and logs
+              if: always()
+              uses: actions/upload-artifact@v4
+              with:
+                name: test-results
+                path: |
+                  tests/IncidentDesk.Tests/TestResults/
+                  api.log
+                  web.log
+                if-no-files-found: ignore
+
+            - name: Emulator logs on failure
+              if: failure()
+              run: docker logs servicebus-emulator
