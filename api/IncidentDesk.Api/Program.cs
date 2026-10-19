@@ -8,6 +8,9 @@ builder.Services.AddProblemDetails();
 // One in-memory store shared by all requests; data is lost when the app stops.
 builder.Services.AddSingleton<IncidentStore>();
 
+// Consumes the "incidents-in" Service Bus queue; see IncidentQueueWorker.cs.
+builder.Services.AddHostedService<IncidentQueueWorker>();
+
 var app = builder.Build();
 
 // A malformed or missing JSON body throws BadHttpRequestException; keep its 400 instead of a 500.
@@ -36,18 +39,20 @@ app.MapGet("/api/incidents", (string? tenantId, IncidentStore store) =>
 // POST /api/incidents  { "tenantId": "...", "title": "...", "severity": "High" }
 app.MapPost("/api/incidents", (CreateIncidentRequest request, IncidentStore store) =>
 {
-    var errors = Validate(request);
+    var errors = request.Validate();
     if (errors.Count > 0)
     {
         return Results.ValidationProblem(errors);
     }
 
+    // Created directly over HTTP, so there is nothing to wait for: "Ready" straight away.
     var incident = new Incident(
         Guid.NewGuid(),
         request.TenantId!,
         request.Title!,
         request.Severity!,
-        DateTimeOffset.UtcNow);
+        DateTimeOffset.UtcNow,
+        IncidentStatus.Ready);
 
     store.Add(incident);
 
@@ -57,38 +62,50 @@ app.MapPost("/api/incidents", (CreateIncidentRequest request, IncidentStore stor
 
 app.Run();
 
-static Dictionary<string, string[]> Validate(CreateIncidentRequest request)
-{
-    var errors = new Dictionary<string, string[]>();
-
-    if (string.IsNullOrWhiteSpace(request.TenantId))
-        errors["tenantId"] = ["The tenantId field is required."];
-
-    if (string.IsNullOrWhiteSpace(request.Title))
-        errors["title"] = ["The title field is required."];
-
-    if (string.IsNullOrWhiteSpace(request.Severity))
-        errors["severity"] = ["The severity field is required."];
-    else if (!Incident.Severities.Contains(request.Severity))
-        errors["severity"] = [$"Severity must be one of: {string.Join(", ", Incident.Severities)}."];
-
-    return errors;
-}
-
-public record Incident(Guid Id, string TenantId, string Title, string Severity, DateTimeOffset CreatedAt)
+public record Incident(Guid Id, string TenantId, string Title, string Severity, DateTimeOffset CreatedAt, string Status)
 {
     // Case-sensitive: "High" is valid, "high" is not.
     public static readonly string[] Severities = ["Low", "Medium", "High", "Critical"];
 }
 
+// "Processing" while a queued incident is being enriched, "Ready" once it is complete.
+public static class IncidentStatus
+{
+    public const string Processing = "Processing";
+    public const string Ready = "Ready";
+}
+
 // Fields are nullable so missing values reach our validation instead of failing JSON binding.
-public record CreateIncidentRequest(string? TenantId, string? Title, string? Severity);
+// Used both for the POST body and for "incidents-in" queue messages.
+public record CreateIncidentRequest(string? TenantId, string? Title, string? Severity)
+{
+    public Dictionary<string, string[]> Validate()
+    {
+        var errors = new Dictionary<string, string[]>();
+
+        if (string.IsNullOrWhiteSpace(TenantId))
+            errors["tenantId"] = ["The tenantId field is required."];
+
+        if (string.IsNullOrWhiteSpace(Title))
+            errors["title"] = ["The title field is required."];
+
+        if (string.IsNullOrWhiteSpace(Severity))
+            errors["severity"] = ["The severity field is required."];
+        else if (!Incident.Severities.Contains(Severity))
+            errors["severity"] = [$"Severity must be one of: {string.Join(", ", Incident.Severities)}."];
+
+        return errors;
+    }
+}
 
 public class IncidentStore
 {
     private readonly ConcurrentDictionary<Guid, Incident> _incidents = new();
 
     public void Add(Incident incident) => _incidents[incident.Id] = incident;
+
+    // Replaces a stored incident (e.g. "Processing" -> "Ready"); same as Add, named for intent.
+    public void Update(Incident incident) => _incidents[incident.Id] = incident;
 
     public IReadOnlyList<Incident> GetForTenant(string tenantId) =>
         _incidents.Values

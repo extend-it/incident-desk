@@ -6,4 +6,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
 
+  <ItemGroup>
+    <PackageReference Include="Azure.Messaging.ServiceBus" Version="7.21.0" />
+  </ItemGroup>
+
 </Project>

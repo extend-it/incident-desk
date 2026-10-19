@@ -5,9 +5,6 @@ namespace IncidentDesk.Tests;
 [TestFixture]
 public class IncidentListTests : AppPageTest
 {
-    private ILocator Incidents => Page.GetByRole(AriaRole.List, new() { Name = "Incidents" })
-                                 .GetByRole(AriaRole.Listitem);
-
     [Test]
     public async Task IncidentCreatedThroughTheApiIsListedOnThePage()
     {

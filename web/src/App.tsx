@@ -7,7 +7,11 @@ type Incident = {
   title: string
   severity: string
   createdAt: string
+  status: 'Processing' | 'Ready'
 }
+
+// How often the list is refreshed while the page is open.
+const POLL_INTERVAL_MS = 1000
 
 // The page is always in exactly one of these states.
 type LoadState =
@@ -25,14 +29,20 @@ export default function App() {
   const [tenant] = useState(getTenantFromUrl)
   const [state, setState] = useState<LoadState>({ kind: 'loading' })
 
-  // Runs after the first render: fetches the tenant's incidents and moves
-  // the page from "loading" to one of the other states.
+  // Runs after the first render: fetches the tenant's incidents, then
+  // re-fetches every POLL_INTERVAL_MS. Only the initial state is "loading";
+  // load() never sets it, so later polls swap the list in place (no flicker).
   useEffect(() => {
-    // Lets us cancel the request if the component goes away (React's dev
+    // Lets us cancel requests if the component goes away (React's dev
     // StrictMode mounts components twice, so this avoids a duplicate update).
     const controller = new AbortController()
+    // Skip a poll while the previous request is still running, so a slow
+    // response can't overlap with (and be overwritten by) an older one.
+    let inFlight = false
 
     async function load() {
+      if (inFlight) return
+      inFlight = true
       try {
         const response = await fetch(
           `/api/incidents?tenantId=${encodeURIComponent(tenant)}`,
@@ -52,11 +62,17 @@ export default function App() {
         if (controller.signal.aborted) return // cancelled on purpose, not an error
         console.error(error)
         setState({ kind: 'error' }) // network failure: no HTTP status
+      } finally {
+        inFlight = false
       }
     }
 
     load()
-    return () => controller.abort()
+    const timer = setInterval(load, POLL_INTERVAL_MS)
+    return () => {
+      clearInterval(timer)
+      controller.abort()
+    }
   }, [tenant])
 
   return (
@@ -92,6 +108,9 @@ export default function App() {
             <li key={incident.id}>
               <span className="title">{incident.title}</span>
               <span className="severity">{incident.severity}</span>
+              <span className="status">
+                {incident.status === 'Processing' ? 'Processing…' : incident.status}
+              </span>
               <time dateTime={incident.createdAt}>
                 {new Date(incident.createdAt).toLocaleString()}
               </time>

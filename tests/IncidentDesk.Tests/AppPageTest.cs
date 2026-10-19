@@ -6,6 +6,8 @@ namespace IncidentDesk.Tests;
 public abstract class AppPageTest : PageTest
 {
     protected IAPIRequestContext Api = null!;
+    protected ILocator Incidents => Page.GetByRole(AriaRole.List, new() { Name = "Incidents" })
+                            .GetByRole(AriaRole.Listitem);
 
     protected static string Setting(string name, string fallback) =>
         TestContext.Parameters.Get(name)

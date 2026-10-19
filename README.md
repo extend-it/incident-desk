@@ -11,6 +11,17 @@ The web dev server proxies `/api/*` to the API, so both must be running.
 
 ## Run it
 
+First, start the local Azure Service Bus emulator (needs Docker). The API
+listens on its `incidents-in` queue, so start the emulator **before** the API:
+
+```powershell
+docker compose -f docker/docker-compose.yaml up -d
+```
+
+The emulator's queues and topics are defined in `docker/Config.json`. If the
+emulator isn't running, the API logs Service Bus errors but its HTTP
+endpoints keep working.
+
 Terminal 1 — API:
 
 ```powershell
@@ -39,6 +50,29 @@ http://localhost:5173/?tenant=fabrikam for another tenant.
 POST body: `tenantId`, `title`, `severity` — all required; `severity` must be
 exactly one of `Low`, `Medium`, `High`, `Critical` (case-sensitive).
 
+Every incident has a `status` of `Processing` or `Ready`. Incidents created
+with POST are `Ready` immediately.
+
+## Queue: `incidents-in` (eventual consistency)
+
+Incidents can also arrive as Service Bus messages on the `incidents-in` queue,
+with the same JSON body as POST (property names are case-insensitive). A
+background worker in the API handles each message:
+
+1. Invalid message (same rules as POST, or not valid JSON): dead-lettered with
+   reason `ValidationFailed` and the errors in the description.
+2. Valid message: the incident is stored with status `Processing`, so it shows
+   up in GET straight away.
+3. After `Enrichment:DelaySeconds` (appsettings.json, default 4) the incident
+   becomes `Ready` and the message is completed.
+
+Settings in `api/IncidentDesk.Api/appsettings.json`:
+
+| Key | Default |
+|---|---|
+| `ServiceBus:ConnectionString` | local emulator |
+| `Enrichment:DelaySeconds` | `4` |
+
 Create an incident for `contoso`:
 
 ```powershell
@@ -61,7 +95,77 @@ Invoke-RestMethod 'http://localhost:5080/api/incidents?tenantId=contoso'
 | HTTP 403 | `role="alert"`: "You don't have access to this tenant's incidents." |
 | Other error | `role="alert"`: "Couldn't load incidents (HTTP {status})", or "Couldn't load incidents" on network failure |
 | Empty | paragraph "No incidents for {tenant}." |
-| Data | `<ul aria-label="Incidents">` with one `<li>` per incident |
+| Data | `<ul aria-label="Incidents">` with one `<li>` per incident; each has `<span class="status">` with "Processing…" or "Ready" |
+
+The page polls `GET /api/incidents` every second. Only the first load shows
+the loading state; later polls update the list in place. A poll that fails
+replaces the list with the matching error state until a later poll succeeds.
 
 The API never returns 403 or 5xx by itself; those states are meant to be
 reached by intercepting `/api/incidents` in Playwright (`page.RouteAsync`).
+
+## Tests
+
+`tests/IncidentDesk.Tests` holds 11 NUnit tests written with Playwright for .NET. They need the
+emulator, the API and the web app running (see *Run it*), then:
+
+```powershell
+dotnet test tests/IncidentDesk.Tests
+```
+
+Every test creates its own uniquely titled incidents, so tests don't depend on each other or on
+data left from earlier runs.
+
+### UI driven from the API: `IncidentListTests`
+
+Arrange through the API, assert through the page.
+
+| Test | What it checks |
+|---|---|
+| `IncidentCreatedThroughTheApiIsListedOnThePage` | An incident created with POST appears in the list with its severity |
+| `EachTenantSeesItsOwnIncident` | Each tenant's page lists that tenant's incident |
+| `IncidentOfAnotherTenantIsNotListed` | Another tenant's incident is absent; the test first waits for its own incident, so "absent" isn't checked before the list has loaded |
+
+### Eventual consistency through the queue: `IncidentFromQueueTests`
+
+| Test | What it checks |
+|---|---|
+| `IncidentSentToTheQueueAppearsAsProcessingThenReady` | The page is opened first; a message is then sent to `incidents-in`, and the row appears as "Processing…" and later "Ready" without a reload |
+
+Opening the page *before* sending the message matters: the row can then only appear through
+polling. In an earlier version that sent the message first, the page's first load could already
+see the incident, so the test didn't prove that polling works. The test waits with explicit
+`Expect` timeouts (10 s, then 15 s), never with sleeps.
+
+### UI states with a mocked API: `IncidentListStateTests`
+
+`Page.RouteAsync` answers `/api/incidents` inside the browser, so these tests need only the web
+app, not the API.
+
+| Test | Mocked response | Expected UI |
+|---|---|---|
+| `EmptyListForStatus200ShowsTheNoIncidentsMessage` | 200 with `[]` | "No incidents for contoso.", no alert |
+| `ServerError500ShowsAnErrorInsteadOfAnEmptyList` | 500 | Alert "Couldn't load incidents (HTTP 500)", no empty-list message |
+| `ServerError503ShowsAnErrorInsteadOfAnEmptyList` | 503 | Alert "Couldn't load incidents (HTTP 503)" |
+| `UnauthorizedAccessError403ShowsAnErrorInsteadOfAnEmptyList` | 403 | Alert "You don't have access to this tenant's incidents." |
+| `NetworkFailureShowsAnErrorWithoutStatus` | Request aborted | Alert "Couldn't load incidents", without a status |
+| `SlowResponseShowsLoadingFirstThenTheList` | 200 after 2 s | "Loading incidents…" first, then the incident, then the loading message gone |
+
+### API only: `IncidentApiTests`
+
+| Test | What it checks |
+|---|---|
+| `IncidentWithUnknownSeverityIsRejected` | POST with severity `Urgent` returns 400 |
+
+### Mutation checks
+
+Each check below was done by hand: the code was broken on purpose, the expected test failed
+for the expected reason, and the code was reverted.
+
+| Mutation | File | Test that failed |
+|---|---|---|
+| GET ignores `tenantId` | `api/IncidentDesk.Api/Program.cs` | `IncidentOfAnotherTenantIsNotListed` (count 1, expected 0); `EachTenantSeesItsOwnIncident` still passed, because presence checks can't catch a leak |
+| Severity not rendered | `web/src/App.tsx` | `IncidentCreatedThroughTheApiIsListedOnThePage` and `EachTenantSeesItsOwnIncident` |
+| Errors shown as an empty list | `web/src/App.tsx` | `ServerError500ShowsAnErrorInsteadOfAnEmptyList`; `NetworkFailureShowsAnErrorWithoutStatus` still passed (different code path) |
+| Polling switched off | `web/src/App.tsx` | `IncidentSentToTheQueueAppearsAsProcessingThenReady`, at "Processing" |
+| Worker never sets `Ready` | `api/IncidentDesk.Api/IncidentQueueWorker.cs` | `IncidentSentToTheQueueAppearsAsProcessingThenReady`, at "Ready" |
